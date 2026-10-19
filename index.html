@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Room Remote</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#eaf2f5;background:#0e191f}
+*{box-sizing:border-box}body{margin:0;padding:28px 18px 60px}main{max-width:640px;margin:auto}header{margin:18px 0 30px}.eyebrow{font-size:12px;letter-spacing:.2em;color:#84cabe}h1{font-size:32px;font-weight:650;margin:10px 0}p{line-height:1.7;color:#a5bbc6;font-size:14px}section,details{border:1px solid #2a414d;background:#15262f;border-radius:18px;padding:22px;margin:18px 0}h2{font-size:18px;margin:0 0 14px}label{display:block;font-size:13px;color:#c1d3db;margin-top:14px}input{width:100%;padding:13px;margin:7px 0;border:1px solid #3f5966;border-radius:9px;background:#0e1c24;color:#fff;font-size:16px}button{font:inherit;cursor:pointer;min-height:48px;border:0;border-radius:10px;padding:12px 18px;background:#9be0ce;color:#102d28;font-weight:650}button:disabled{opacity:.45;cursor:wait}.row{display:flex;gap:10px;align-items:center;justify-content:space-between}.secondary{background:#263d49;color:#c7dde5}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.preset{background:#203943;color:#eaf7f4;text-align:left;min-height:82px;width:100%;overflow-wrap:anywhere}.preset small{display:block;font-size:11px;font-weight:400;color:#9cbcc7;margin-top:8px}.delete{font-size:12px;color:#a3bac4;background:transparent;padding:5px 8px;min-height:36px}.notice{padding:14px 16px;border-left:3px solid #91d9c9;background:#192d35;border-radius:5px;font-size:14px;line-height:1.65;white-space:pre-wrap}.notice.error{border-color:#eea290;color:#ffd1c3}summary{cursor:pointer;font-weight:600;min-height:28px}.hint{font-size:12px;color:#91aab6}#last{margin:18px 0 0}.hidden{display:none}footer{font-size:12px;color:#7a939e;line-height:1.8;margin-top:25px}
+</style>
+<main>
+<header><div class="eyebrow">PICO W · ROOM REMOTE</div><h1>部屋を、心地よく。</h1><p>登録したリモコン操作を送信します。</p></header>
+<section id="login"><h2>操作画面に接続</h2><form id="login-form"><label for="token">アクセスキー</label><input id="token" type="password" autocomplete="off" spellcheck="false" required placeholder="config.py の API_TOKEN"><button type="submit">接続する</button></form><p class="hint">キーはこのページを開いている間だけ保持します。</p></section>
+<div id="notice" class="notice" role="status" aria-live="polite">自宅のWi-Fi、または自宅へ接続したVPNでご利用ください。</div>
+<section id="controls" class="hidden"><div class="row"><h2>登録した操作</h2><button id="refresh" class="secondary" type="button">更新</button></div><p id="empty" class="hidden">まだ操作がありません。下の「リモコンを学習」から登録してください。</p><div id="presets" class="grid"></div><p id="last"></p><p class="hint">表示は最後に送信した操作です。エアコンの現在の運転状態や室温は確認できません。</p></section>
+<details id="learning" class="hidden"><summary>リモコンを学習</summary><p>「冷房26℃・風量自動」など、使いたい設定を元のリモコンで用意してください。登録ごとに、その設定を含む信号全体を記録します。</p><form id="learn-form"><label for="preset-id">操作ID（英小文字・数字・_・-）</label><input id="preset-id" pattern="[a-z0-9_-]{1,40}" maxlength="40" placeholder="cool_26" required><label for="label">表示名</label><input id="label" maxlength="60" placeholder="冷房26℃・風量自動" required><label for="carrier">搬送波の周波数（Hz）</label><input id="carrier" type="number" min="30000" max="60000" step="1" value="38000" required><p class="hint">通常は設定値のまま試してください。学習後は、エアコンの前で動作を確認してください。</p><button type="submit">学習を開始</button></form></details>
+<footer>赤外線がエアコンに届く位置にPico Wを設置してください。<br>運転・停止を確実に分けられる信号の登録をおすすめします。</footer>
+</main>
+<script>
+'use strict';
+let accessKey = '';
+let busy = false;
+const $ = id => document.getElementById(id);
+function notice(message, error=false) { $('notice').textContent=message; $('notice').classList.toggle('error',error); }
+function lock(value) { busy=value; document.querySelectorAll('button').forEach(b=>b.disabled=value); }
+async function api(path, data) {
+  const abort=new AbortController();
+  const timeout=setTimeout(()=>abort.abort(),path==='/api/learn'?45000:12000);
+  try {
+    const options={method:data===undefined?'GET':'POST',headers:{Authorization:'Bearer '+accessKey},cache:'no-store',signal:abort.signal};
+    if(data!==undefined) {options.headers['Content-Type']='application/json';options.body=JSON.stringify(data);}
+    const response=await fetch(path,options);
+    const result=await response.json();
+    if(!response.ok) {
+      if(response.status===401) {
+        accessKey=''; $('login').classList.remove('hidden'); $('controls').classList.add('hidden'); $('learning').classList.add('hidden');
+        throw new Error('アクセスキーを確認してください。');
+      }
+      throw new Error(result.error||'リクエストに失敗しました。');
+    }
+    return result;
+  } catch(error) {
+    if(error.name==='AbortError'||error instanceof TypeError) throw new Error('応答を確認できません。操作が実行された可能性もあるため、機器の状態を確認してから再試行してください。');
+    throw error;
+  } finally {clearTimeout(timeout);}
+}
+async function task(action) {
+  if(busy)return;
+  lock(true);
+  try {await action();} catch(error) {notice(error.message,true);} finally {lock(false);}
+}
+async function refresh() {
+  // Sequential requests: the Pico W serves one connection at a time.
+  const data=await api('/api/presets');
+  const status=await api('/api/status');
+  $('presets').replaceChildren();
+  $('empty').classList.toggle('hidden',data.presets.length!==0);
+  for(const preset of data.presets) {
+    const card=document.createElement('div');
+    const button=document.createElement('button'); button.className='preset'; button.type='button'; button.textContent=preset.label;
+    const caption=document.createElement('small'); caption.textContent=preset.id; button.appendChild(caption);
+    button.addEventListener('click',()=>task(async()=>{
+      notice(preset.label+' を送信しています…');
+      await api('/api/send',{id:preset.id});
+      $('last').textContent='最後に送信：'+preset.label;
+      notice('「'+preset.label+'」の赤外線送信が完了しました。機器の受信・動作は未確認です。');
+    }));
+    const remove=document.createElement('button'); remove.className='delete'; remove.type='button'; remove.textContent='登録を削除';
+    remove.addEventListener('click',()=>{if(confirm('「'+preset.label+'」の学習データを削除しますか？'))task(async()=>{await api('/api/delete',{id:preset.id});await refresh();notice('登録を削除しました。');});});
+    card.append(button,remove); $('presets').appendChild(card);
+  }
+  $('last').textContent=status.last_sent?'最後に送信：'+status.last_sent:'起動後の送信はまだありません。';
+  $('carrier').value=status.carrier_hz;
+  $('learning').classList.toggle('hidden',!status.can_learn);
+  $('controls').classList.remove('hidden'); $('login').classList.add('hidden');
+  lock(busy);
+}
+$('login-form').addEventListener('submit',event=>{event.preventDefault();task(async()=>{accessKey=$('token').value.trim();await refresh();$('token').value='';notice('接続しました。操作を選んでください。');});});
+$('refresh').addEventListener('click',()=>task(async()=>{await refresh();notice('登録内容を更新しました。');}));
+$('learn-form').addEventListener('submit',event=>{event.preventDefault();task(async()=>{
+  notice('学習を準備しています。約1秒待ってから、受信部に向けて元のリモコンを1回押してください。');
+  const result=await api('/api/learn',{id:$('preset-id').value,label:$('label').value,carrier_hz:Number($('carrier').value)});
+  await refresh(); notice('「'+result.saved+'」を保存しました。エアコンの前で送信して、設定が再現されるか確認してください。');
+});});
+</script>
+</html>

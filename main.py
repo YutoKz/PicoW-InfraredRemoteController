@@ -1,116 +1,60 @@
-from umqtt.simple import MQTTClient
-from machine import Pin, PWM
+"""Boot entry point. No transmission on boot, reconnect, or import."""
+import gc
+import socket
 import time
-from wifi import connect
 
-ir = PWM(Pin(17, Pin.OUT))
-f = 38000
-ir.freq(f)
-dty = 0x5555
 
-#　必要に応じ調整　今回は35が適当
-adj = 35
+def run():
+    import config
+    from settings import validate
+    from presets import PresetStore
+    from ir_tx import IRTransmitter
+    from http_server import Application
+    from wifi import connect
+    validate(config)
+    receiver = None
+    if config.IR_RECEIVE_PIN is not None:
+        from read import IRReceiver
+        receiver = IRReceiver(config.IR_RECEIVE_PIN, config.CAPTURE_IDLE_MS, config.CAPTURE_TIMEOUT_MS)
+    app = Application(config, PresetStore(config.PRESET_DIRECTORY),
+                      IRTransmitter(config.IR_SEND_PIN, config.IR_STATE_MACHINE), receiver)
+    retry_seconds = 1
+    while True:
+        server = None
+        try:
+            wlan = connect(config.WIFI_SSID, config.WIFI_PASSWORD, config.WIFI_TIMEOUT_MS)
+            server = socket.socket()
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("0.0.0.0", config.HTTP_PORT))
+            server.listen(2)
+            server.settimeout(1)
+            print("Open http://%s:%d on your LAN/VPN" % (wlan.ifconfig()[0], config.HTTP_PORT))
+            retry_seconds = 1
+            while wlan.isconnected():
+                try:
+                    client, _ = server.accept()
+                except OSError as error:
+                    # MicroPython ports may use ETIMEDOUT or EAGAIN for a timeout.
+                    if error.args and error.args[0] in (11, 110, 116):
+                        continue
+                    raise
+                try:
+                    app.handle(client)
+                finally:
+                    client.close()
+                    gc.collect()
+        except OSError:
+            print("Network unavailable; retrying in", retry_seconds, "seconds")
+        finally:
+            if server is not None:
+                server.close()
+        time.sleep(retry_seconds)
+        retry_seconds = min(retry_seconds * 2, 30)
 
-# MQTT
-MQTT_BROKER = "192.168.3.6"
-MQTT_TOPIC = "koizumi"
 
-shared_data = [0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0]
-    
-def send_data(data):
-    #　はじめのやつ
-    # デューティー比1/3がHIGHのPWM信号を送信（adj回分）
-    for i in range(1, 18*adj):
-        ir.duty_u16(dty)
-            
-    # LOWのPWM信号を送信（3×adj回分）
-    for i in range(1, 9*adj):
-        ir.duty_u16(0)
-
-    # 16bitのコードを読み込む
-    for bit in data:
-       
-        # コードの値が「1」のときの処理
-        if(bit == 1):
-        
-            # デューティー比1/3がHIGHのPWM信号を送信（adj回分）
-            for i in range(1, 1*adj):
-                ir.duty_u16(dty)
-            
-            # LOWのPWM信号を送信（3×adj回分）
-            for i in range(1, 3*adj):
-                ir.duty_u16(0)
-         
-        # コードの値が「0」のときの処理
-        else:
-            
-            # デューティー比1/3がHIGHのPWM信号を送信（adj回分）
-            for i in range(1, 1*adj):
-                ir.duty_u16(dty)
-            
-            # LOWのPWM信号を送信（7×adj回分）
-            for i in range(1, 1*adj):
-                ir.duty_u16(0)
-    
-    # ストップビット（データの終端を示す信号）
-    for l in range(1,1*adj):
-        ir.duty_u16(dty)
-
-    # トレーラー（通信の終わりを示す信号）
-    for l in range(1,1*adj):
-        for i in range(1,85):
-            ir.duty_u16(0)
-            
-    print(f'send {data}')
-        
-def callback(topic, msg):
-    print(f'received {msg}')
-    
-    if msg == b"junnokuri":
-        data = shared_data + [0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1]
-    elif msg == b"up":
-        data = shared_data + [1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1]
-    elif msg == b"down":
-        data = shared_data + [0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1]
-    elif msg == b"30minoff":
-        data = shared_data + [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
-    elif msg == b"60minoff":
-        data = shared_data + [0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1]
-    elif msg == b"kaijo":
-        data = shared_data + [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
-    elif msg == b"shoutou":
-        data = shared_data + [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
-    else:
-        data = shared_data
-    
-    send_data(data)
-
-ip = connect()
-print(f'connected on {ip}')
-
-# MQTT
-client = MQTTClient("controller", MQTT_BROKER)
-client.set_callback(callback)
-
-# 試み
-connection_flag = False
-while connection_flag is False:
+if __name__ == "__main__":
     try:
-        client.connect()
-        print("Connected to Broker")
-        connection_flag = True
-    except OSError as e:
-        print("Couldn't connect to Broker:", e)
-        connection_flag = False
-
-
-
-#client.connect()
-client.subscribe(MQTT_TOPIC)
-print("connected to client")
-
-while True:
-    client.wait_msg()
-    
-    
-
+        run()
+    except (ImportError, ValueError) as error:
+        print("Setup required:", error)
+        print("Copy config.example.py to config.py and upload all runtime files. See README.md.")
