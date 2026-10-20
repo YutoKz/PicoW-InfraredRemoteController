@@ -175,6 +175,33 @@ py -m mpremote connect COM5 reset
 
 ## トラブルシューティング
 
+### Wi-Fiに接続できない場合
+
+`Imports/config/PIO assembly: OK` はWi-Fi接続成功を意味しません。
+今回の実機報告では受信の待機レベル1、import・設定・PIOアセンブルの成功を確認していますが、Wi-Fi接続は未完了です。
+
+最新コードは失敗時の状態を、切断によってリセットされる前に記録します。`STAT_NO_AP_FOUND` はAP応答なし、`STAT_WRONG_PASSWORD` はドライバーが認証失敗を示す状態、`STAT_CONNECT_FAIL` はその他の接続失敗です。数値だけで判断せず、ファームウェアが提供する名前も確認してください。`timeout` は設定時間内にIP取得が完了しなかったことを示し、原因を特定する表示ではありません。
+
+REPLを `Ctrl-]` で終了し、WindowsのPowerShellで次を実行します。COM3は `mpremote connect list` に表示された実際のポートに置き換えます。
+
+```powershell
+py tools/deploy.py --port COM3
+py -m mpremote connect COM3 run tools/wifi_check.py
+```
+
+診断は設定したSSIDがスキャンに見えるか、対象APのチャンネル・電波強度、接続結果を表示します。SSIDそのもの、パスワード、APIキー、周囲のSSID一覧、MACアドレスは表示しません。赤外線は送信しません。現在のWi-Fi接続をいったん切断し、`config.py` の設定で再接続します。診断後は自動でWebサーバーを起動しません。
+
+SSIDが見つからなければ、自宅の2.4 GHz側のSSID、大小文字・空白、ルーターとの距離を確認してください。非公開SSIDはスキャンに出ない場合があります。認証失敗ならWi-Fiパスワードを手元で確認します。設定を編集した場合は上記の転送・診断を再実行してください。
+
+`Connected: True` になったら、通常起動へ戻します。
+
+```powershell
+py -m mpremote connect COM3 reset
+py -m mpremote connect COM3 repl
+```
+
+参考: [MicroPython WLANの状態・スキャン仕様](https://docs.micropython.org/en/latest/library/network.WLAN.html)
+
 | 症状 | 確認事項 |
 | --- | --- |
 | `Setup required` | `config.py`、全設定項目、32文字以上のキー、転送した全ファイル |

@@ -10,7 +10,7 @@ def run():
     from presets import PresetStore
     from ir_tx import IRTransmitter
     from http_server import Application
-    from wifi import connect
+    from wifi import connect, WiFiError, error_code
     validate(config)
     receiver = None
     if config.IR_RECEIVE_PIN is not None:
@@ -43,8 +43,11 @@ def run():
                 finally:
                     client.close()
                     gc.collect()
-        except OSError:
-            print("Network unavailable; retrying in", retry_seconds, "seconds")
+        except WiFiError as error:
+            print(error, "Retrying in", retry_seconds, "seconds")
+        except OSError as error:
+            print("HTTP/network error: errno=%s; retrying in %s seconds" %
+                  (error_code(error), retry_seconds))
         finally:
             if server is not None:
                 server.close()
